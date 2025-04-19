@@ -73,26 +73,28 @@ This file contains two key transformer architectures:
    - Return only the final token's logits
 '''
 
+
 ## -------------------------------------------------------------------------------------------------
 ## Decoder-Only Transformer
 ## -------------------------------------------------------------------------------------------------
 class DecoderOnlyTransformer(nn.Module):
-    '''
+    """
     A Pre-LN Decoder-Only Transformer model.
-    '''
+    """
+
     def __init__(
-            self, 
-            num_layers: int, 
-            d_model: int, 
-            num_heads: int, 
-            d_ff: int, 
-            dropout: float, 
-            max_len: int, 
-            num_classes: int,
-            weight_tying: bool = False,
-            layer_drop_rate: float = 0.0,
+        self,
+        num_layers: int,
+        d_model: int,
+        num_heads: int,
+        d_ff: int,
+        dropout: float,
+        max_len: int,
+        num_classes: int,
+        weight_tying: bool = False,
+        layer_drop_rate: float = 0.0,
     ):
-        '''
+        """
         Initialize the Decoder-Only Transformer model.
 
         Args:
@@ -105,105 +107,115 @@ class DecoderOnlyTransformer(nn.Module):
             num_classes: int, number of classes
             weight_tying: bool, whether to use weight tying (default: False)
             layer_drop_rate: float, layer drop rate (default: 0.0)
-        '''
+        """
         super().__init__()
-        
-        # TODO: Implement __init__
 
-        # Initialize the decoder
         # DO NOT MODIFY THESE ATTRIBUTES
-        self.max_len         = max_len
+        self.max_len = max_len
         self.layer_drop_rate = layer_drop_rate
-        self.num_classes     = num_classes
-        self.num_layers      = num_layers
-        
-        # TODO: Create a ModuleList of decoder layers based on the number of layers
-        self.dec_layers     = NotImplementedError # ModuleList of decoder layers
+        self.num_classes = num_classes
+        self.num_layers = num_layers
 
-        # TODO: Create target embedding and other layers
-        self.target_embedding       = NotImplementedError # Target embedding
-        self.positional_encoding    = NotImplementedError # Positional encoding
-        self.final_linear           = NotImplementedError # Final linear layer
-        self.dropout                = NotImplementedError # Dropout
-        self.norm                   = NotImplementedError # Layer norm
+        # Create a ModuleList of decoder layers based on the number of layers
+        self.dec_layers = nn.ModuleList(
+            [
+                SelfAttentionDecoderLayer(d_model, num_heads, d_ff, dropout)
+                for _ in range(num_layers)
+            ]
+        )
+
+        # Create target embedding and other layers
+        self.target_embedding = nn.Embedding(num_classes, d_model)
+        self.positional_encoding = PositionalEncoding(d_model, max_len)
+        self.dropout = nn.Dropout(dropout)
+        self.norm = nn.LayerNorm(d_model)
+        self.final_linear = nn.Linear(d_model, num_classes)
 
         # Weight tying (extra form of regularization, read more about it)
         if weight_tying:
             self.target_embedding.weight = self.final_linear.weight
 
-        raise NotImplementedError # Remove once implemented
-
-    def forward(self, padded_targets: torch.Tensor, target_lengths: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, dict]:
-        '''
+    def forward(
+        self,
+        padded_targets: torch.Tensor,
+        target_lengths: Optional[torch.Tensor] = None,
+    ) -> Tuple[torch.Tensor, dict]:
+        """
         Forward pass for the decoder. Used for Training only. Tokens are assumed to be right-padded.
         Args:
             padded_targets (torch.Tensor): The padded target sequence. shape: (batch_size, seq_len)
             target_lengths (Optional[torch.Tensor]): The lengths of the target sequences. shape: (batch_size,)
         Returns:
-            seq_out (torch.Tensor): The output sequence. shape: (batch_size, seq_len, d_model)
-            runnint_att (dict): The attention weights. shape: (batch_size, seq_len, seq_len)
-        '''
-        # DO NOT MODIFY 
+            seq_out (torch.Tensor): The output sequence logits. shape: (batch_size, seq_len, num_classes)
+            running_att (dict): The attention weights. shape: (batch_size, seq_len, seq_len)
+        """
+        # DO NOT MODIFY
         if self.training and target_lengths is None:
             raise ValueError("target_lengths must be provided during training")
-        
-        # TODO: Implement forward
 
-        # TODO: Create padding mask for padded_targets on the same device as the input (use PadMask)
+        # Create padding mask for padded_targets on the same device as the input
         pad_mask_dec = None
         if target_lengths is not None:
-            pad_mask_dec = NotImplementedError
-        
-        # TODO: Create causal mask to prevent attending to future tokens on the same device as the input (use CausalMask)
-        causal_mask = NotImplementedError
+            pad_mask_dec = PadMask(padded_targets, target_lengths.to(torch.long))
 
-        # TODO: Apply the embedding
-        x = NotImplementedError
-        # TODO: Apply positional encoding
-        x = NotImplementedError
-        # TODO: Apply dropout 
-        x = NotImplementedError
+        # Create causal mask to prevent attending to future tokens
+        causal_mask = CausalMask(padded_targets)
 
-        # TODO: Pass through all decoder layers, save attention masks
-        runnint_att = {}
-        for i in range(self.num_layers):
+        # Apply the embedding
+        x = self.target_embedding(padded_targets)
+        # Apply positional encoding
+        x = self.positional_encoding(x)
+        # Apply dropout
+        x = self.dropout(x)
+
+        # Pass through all decoder layers, save attention masks
+        running_att = {}
+        for i, layer in enumerate(self.dec_layers):
             # Optionally apply LayerDrop during training (More regularization!)
-            if self.training and self.layer_drop_rate > 0 and random.random() < self.layer_drop_rate:
+            if (
+                self.training
+                and self.layer_drop_rate > 0
+                and random.random() < self.layer_drop_rate
+            ):
                 continue
-            
-            # TODO: Pass through decoder layer
-            x, attention = NotImplementedError, NotImplementedError
-            
-            # TODO: Save attention weights  
-            runnint_att['layer{}_dec_self'.format(i + 1)] = attention
 
-        # TODO: Apply normalization
-        x = NotImplementedError
-        # TODO: Linear layer (Final Projection) for next character prediction
-        seq_out = NotImplementedError
-        
-        # TODO: Return the output sequence and running attention weights
-        raise NotImplementedError
-    
+            # Pass through decoder layer
+            x, attention = layer(
+                x, key_padding_mask=pad_mask_dec, attn_mask=causal_mask
+            )
+
+            # Save attention weights
+            running_att[f"layer{i+1}_dec_self"] = attention
+
+        # Apply normalization
+        x = self.norm(x)
+        # Linear layer (Final Projection) for next token prediction
+        seq_out = self.final_linear(x)
+
+        # Return the output sequence and running attention weights
+        return seq_out, running_att
+
     def score(self, batch_prompts: torch.Tensor) -> torch.Tensor:
-        '''
-        Score the tokens for the decoder. 
+        """
+        Score the tokens for the decoder.
         This is used for scoring the next token for a given prompt.
-        Padding mask is not applied so ensure that the prompts are not padded. 
-        Can only handle batch_size = 1 or batch with same lengths and no padding. 
+        Padding mask is not applied so ensure that the prompts are not padded.
+        Can only handle batch_size = 1 or batch with same lengths and no padding.
         Args:
             prompts (torch.Tensor) : tensor of fixed length token sequences. shape: (batch_size, seq_len)
         Returns:
             logits (torch.Tensor): Batch of next token logits. shape: (batch_size, num_classes)
-        '''
+        """
         if self.training:
-            raise ValueError("score method is not supported during training, use forward method instead")
+            raise ValueError(
+                "score method is not supported during training, use forward method instead"
+            )
         # Forward pass with no target lengths
         seq_out, _ = self.forward(batch_prompts, target_lengths=None)
-        # Return the last token's logits for next token prediction    
-        logits     = seq_out[:, -1, :]
+        # Return the last token's logits for next token prediction
+        logits = seq_out[:, -1, :]
         return logits
-    
+
 
 ## -------------------------------------------------------------------------------------------------
 ## Encoder-Decoder Transformer
