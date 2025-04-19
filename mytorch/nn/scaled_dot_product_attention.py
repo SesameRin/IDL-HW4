@@ -1,75 +1,76 @@
 import numpy as np
 from .activation import Softmax
 
+
 class ScaledDotProductAttention:
     """
     Scaled Dot Product Attention
-    """ 
+    """
+
     def __init__(self):
-        '''
+        """
         Initialize the ScaledDotProductAttention class.
-        '''
-        # Initialize your softmax layer
-        # What dimension should you pass to the softmax constructor?
-        self.eps = 1e10 # DO NOT MODIFY
-        self.softmax = NotImplementedError
-        
-    
+        """
+        self.eps = 1e10  # DO NOT MODIFY
+        # softmax over the last dimension (source sequence length S)
+        self.softmax = Softmax(dim=-1)
+
     def forward(self, Q, K, V, mask=None):
         """
-        :param Q: Query matrix of shape (N, ..., H, L, E) where L is target sequence length
-        :param K: Key matrix of shape (N, ..., H, S, E) where S is source sequence length
-        :param V: Value matrix of shape (N, ..., H, S, Ev) where Ev is value dimension
-        :param mask: Boolean mask matrix of shape (N, ..., H, L, S) or broadcastable shape where 1/True indicates a position to ignore
-        :return: Output matrix of shape (N, ..., H, L, Ev)
+        :param Q: shape (N,...,H,L,E)
+        :param K: shape (N,...,H,S,E)
+        :param V: shape (N,...,H,S,Ev)
+        :param mask: broadcastable to (N,...,H,L,S), True = ignore
+        :return: shape (N,...,H,L,Ev)
         """
-        # TODO: Implement forward pass
-        
-        # Calculate attention scores: (N, ..., H, L, S)
-        # (N, ..., H, L, E) @ (N, ..., H, E, S) -> (N, ..., H, L, S)
-        scaled_dot_product = NotImplementedError
-        
-        # Apply mask before softmax if provided
-        # If mask is not None, add -self.eps to the attention scores for positions to ignore
+        # 1) raw dot product: (N,...,H,L,S)
+        #    K^T over the last two dims
+        scaled_dot = np.matmul(Q, K.swapaxes(-2, -1))
+
+        # 2) scale by sqrt(d_k)
+        d_k = Q.shape[-1]
+        scaled_dot = scaled_dot / np.sqrt(d_k)
+
+        # 3) apply mask if provided
         if mask is not None:
-            scaled_dot_product = NotImplementedError
+            # wherever mask==True, subtract a large number
+            scaled_dot = np.where(mask, scaled_dot - self.eps, scaled_dot)
 
-        # Compute attention scores: Apply softmax along S dimension (N, ..., H, L, S)
-        self.attention_scores = NotImplementedError
+        # 4) softmax over S dimension
+        #    store for backward
+        self.attention_scores = self.softmax.forward(scaled_dot)
 
-        # Calculate output: (N, ..., H, L, Ev)
-        # (N, ..., H, L, S) @ (N, ..., H, S, Ev) -> (N, ..., H, L, Ev) 
-        output = NotImplementedError
+        # 5) weighted sum with V -> (N,...,H,L,Ev)
+        output = np.matmul(self.attention_scores, V)
 
-        # Return output
-        raise NotImplementedError
-    
+        # cache inputs for backward
+        self.Q, self.K, self.V, self.mask = Q, K, V, mask
+        return output
+
     def backward(self, d_output):
         """
-        :param d_output: Gradient of loss wrt output of shape (N, ..., H, L, Ev)
-        :return: Gradient of loss wrt input Q, K, V
+        :param d_output: shape (N,...,H,L,Ev)
+        :return: dQ, dK, dV with shapes matching Q,K,V
         """
-        # TODO: Implement backward pass
+        Q, K, V, mask = self.Q, self.K, self.V, self.mask
+        scores = self.attention_scores
+        d_k = Q.shape[-1]
 
-        # Calculate gradients for V: (N, ..., H, S, Ev)
-        # (N, ..., H, L, S) @ (N, ..., H, S, Ev) -> (N, ..., H, L, Ev) 
-        # Use the transpose of stored softmax output to swap last two dimensions   
-        d_V = NotImplementedError
-        
-        # Calculate gradients for attention scores
-        # (N, ..., H, L, Ev) @ (N, ..., H, Ev, S) -> (N, ..., H, L, S)
-        d_attention_scores = NotImplementedError
-        d_scaled_dot_product = NotImplementedError
-        
-        # Scale gradients by sqrt(d_k)
-        d_scaled_dot_product = NotImplementedError
-        
-        # Calculate gradients for Q and K
-        # (N, ..., H, L, S) @ (N, ..., H, S, E) -> (N, ..., H, L, E)   
-        d_Q = NotImplementedError
-        # (N, ..., H, L, S) @ (N, ..., H, L, E) -> (N, ..., H, S, E)
-        d_K = NotImplementedError
-        
-        # Return gradients for Q, K, V
-        raise NotImplementedError
+        # 1) grad wrt V:  scores^T @ d_output  -> (N,...,H,S,Ev)
+        d_V = np.matmul(scores.swapaxes(-2, -1), d_output)
 
+        # 2) grad wrt attention scores:  d_output @ V^T -> (N,...,H,L,S)
+        d_scores = np.matmul(d_output, V.swapaxes(-2, -1))
+
+        # 3) back through softmax: get grad wrt scaled_dot
+        d_scaled = self.softmax.backward(d_scores)
+
+        # 4) undo the scaling:  d_raw = d_scaled / sqrt(d_k)
+        d_raw = d_scaled / np.sqrt(d_k)
+
+        # 5a) grad wrt Q:  d_raw @ K -> (N,...,H,L,E)
+        d_Q = np.matmul(d_raw, K)
+        # 5b) grad wrt K:  d_raw^T @ Q -> (N,...,H,S,E)
+        d_K = np.matmul(d_raw.swapaxes(-2, -1), Q)
+
+        return d_Q, d_K, d_V
