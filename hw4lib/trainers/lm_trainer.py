@@ -55,7 +55,7 @@ class LMTrainer(BaseTrainer):
         # Use value in tokenizer for padding
         self.criterion = nn.CrossEntropyLoss(
             ignore_index=self.tokenizer.pad_id,
-            label_smoothing=self.config['training']['label_smoothing']
+            label_smoothing=self.config['loss']['label_smoothing']
         )
 
     def _train_epoch(self, dataloader) -> Tuple[Dict[str, float], Dict[str, torch.Tensor]]:
