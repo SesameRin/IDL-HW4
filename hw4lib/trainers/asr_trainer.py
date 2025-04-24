@@ -57,28 +57,26 @@ class ASRTrainer(BaseTrainer):
     def __init__(self, model, tokenizer, config, run_name, config_file, device=None):
         super().__init__(model, tokenizer, config, run_name, config_file, device)
 
-        # ── 1. Cross-Entropy (CE) loss ────────────────────────────────────────────
+        # ① Cross-Entropy Loss
         ls_val = self.config["loss"].get("label_smoothing", 0.0)
         self.ce_criterion = nn.CrossEntropyLoss(
-            ignore_index=self.tokenizer.pad_id, label_smoothing=ls_val
+            ignore_index=self.tokenizer.pad_id,
+            label_smoothing=ls_val
         )
 
-        # ── 2. CTC loss（可选）─────────────────────────────────────────────────────
-        self.ctc_weight = self.config["loss"].get("ctc_weight", 0.0)
+        # ② CTC Loss（可选）
+        self.ctc_weight   = self.config["loss"].get("ctc_weight", 0.0)
         self.ctc_criterion = None
         if self.ctc_weight > 0:
-            # 使用 pad_id 作为 blank token，避免冲突
             self.ctc_criterion = nn.CTCLoss(
-                blank=self.tokenizer.pad_id, zero_infinity=True
+                blank=self.tokenizer.pad_id,
+                zero_infinity=True
             )
 
-        # ── 3. 优化器 / 学习率调度器（如果还没创建）───────────────────────────────
+        # ③ Optimizer（scheduler 延后到 train() 里创建）
         if self.optimizer is None:
             self.optimizer = create_optimizer(self.model, self.config["optimizer"])
-        if self.scheduler is None:
-            self.scheduler = create_scheduler(
-                self.optimizer, self.config["scheduler"], None
-            )  # dataloader 训练时再 set total_steps
+
 
     def _train_epoch(self, dataloader):
         """One epoch training loop."""
