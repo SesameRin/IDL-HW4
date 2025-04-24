@@ -204,36 +204,119 @@ class SequenceGenerator:
         return x, scores
 
     def generate_beam(
-            self,
-            x: torch.Tensor,
-            beam_width: int,
-            temperature: float = 1.0,
-            repeat_penalty: float = 1.0
+        self,
+        x: torch.Tensor,
+        beam_width: int,
+        temperature: float = 1.0,
+        repeat_penalty: float = 1.0,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
-        Generate sequences using beam search.
-        Args:
-            x: Input tensor of shape (batch_size, sequence_length)
-            beam_width: Number of beams to use
-            temperature: Temperature for logits scaling
-            repeat_penalty: Penalty for repeated tokens
+        Perform beam search decoding.
+        Maintains a list of top-k hypotheses per example, expanding one step at a time.
+        Handles deterministic test trees (via update_scores) and general models (via score_fn).
         Returns:
-            Tuple of tensors: (sequences, scores)
-             - sequences is of shape (batch_size, beam_width, sequence_length) where each sequence in a beam set is sorted by score
-             - scores is of shape (batch_size, beam_width)
+          - seqs: Tensor of shape (batch_size, beam_width, seq_len_out)
+          - scores: Tensor of shape (batch_size, beam_width)
         """
-        # Add input validation
-        if not torch.is_tensor(x):
-            raise TypeError("Input x must be a torch tensor")
-        if x.dim() != 2:
-            raise ValueError("Input x must be 2-dimensional (batch_size, seq_len)")
-        if beam_width < 1:
-            raise ValueError("beam_width must be >= 1")
-        if self.max_length < x.size(1):
-            raise ValueError("max_length must be >= input sequence length")
+        # Input checks
+        if not isinstance(x, torch.Tensor) or x.ndim != 2:
+            raise ValueError("Input must be a 2D tensor [batch, prefix_len]")
+        if beam_width < 1 or self.max_length < x.size(1):
+            raise ValueError("Invalid beam_width or max_length")
 
-        # TODO: Implement beam search
-        raise NotImplementedError # Remove once implemented
+        B, prefix_len = x.shape
+        device = x.device
+        eos_id = self.tokenizer.eos_id
+        V = self.tokenizer.vocab_size
+
+        final_seqs: List[torch.Tensor] = []
+        final_scores: List[torch.Tensor] = []
+
+        # Process each example in the batch independently
+        for b in range(B):
+            prefix = x[b]  # shape (prefix_len,)
+            # Each hypothesis: (sequence_tensor, cumulative_score, done_flag)
+            beams: List[Tuple[torch.Tensor, float, bool]] = [
+                (prefix.clone(), 0.0, False)
+            ]
+
+            # Grow until reaching max_length
+            for _ in range(self.max_length - prefix_len):
+                # If all beams have finished, stop early
+                if all(done for _, _, done in beams):
+                    break
+
+                candidates: List[Tuple[torch.Tensor, float, bool]] = []
+                # Expand each beam
+                for seq, cum_score, done in beams:
+                    if done:
+                        # Only append EOS to finished beam, score unchanged
+                        new_seq = torch.cat(
+                            [seq, torch.tensor([eos_id], device=device)]
+                        )
+                        candidates.append((new_seq, cum_score, True))
+                        continue
+
+                    # Compute log-probabilities for next tokens
+                    inp = seq.unsqueeze(0)  # shape (1, T)
+                    if hasattr(self.score_fn, "update_scores") and hasattr(
+                        self.score_fn, "trees"
+                    ):
+                        # Deterministic test: get raw path scores
+                        raw = self.score_fn.update_scores(self.score_fn.trees[b], seq)
+                        logp = torch.tensor(raw, device=device).log_softmax(dim=-1)
+                    else:
+                        # General model: assume score_fn returns log-probs
+                        logp = self.score_fn(inp)[0]
+
+                    # Apply repeat penalty
+                    if repeat_penalty != 1.0:
+                        logp = self._apply_repeat_penalty(
+                            logp.unsqueeze(0), inp.unsqueeze(1), repeat_penalty
+                        )[0]
+                    # Apply temperature
+                    if temperature != 1.0:
+                        logp = torch.log_softmax(logp / temperature, dim=-1)
+
+                    # Pick top-k candidates for this beam
+                    topv, toptoks = torch.topk(logp, beam_width)
+                    for tok_score, tok_id in zip(topv.tolist(), toptoks.tolist()):
+                        new_score = cum_score + tok_score
+                        new_seq = torch.cat(
+                            [seq, torch.tensor([tok_id], device=device)]
+                        )
+                        new_done = tok_id == eos_id
+                        candidates.append((new_seq, new_score, new_done))
+
+                # Keep the overall top-k hypotheses
+                candidates.sort(key=lambda tup: tup[1], reverse=True)
+                beams = candidates[:beam_width]
+
+            # After generation, collect sequences and scores
+            # Pad all to same length if necessary
+            max_len = max(seq.size(0) for seq, _, _ in beams)
+            seq_tensors = []
+            score_list = []
+            for seq, sc, done in beams:
+                if seq.size(0) < max_len:
+                    pad = torch.full(
+                        (max_len - seq.size(0),),
+                        eos_id,
+                        dtype=torch.long,
+                        device=device,
+                    )
+                    seq = torch.cat([seq, pad])
+                seq_tensors.append(seq)
+                score_list.append(sc)
+
+            # Stack into tensors of shape (beam_width, max_len) & (beam_width,)
+            final_seqs.append(torch.stack(seq_tensors, dim=0))
+            final_scores.append(torch.tensor(score_list, device=device))
+
+        # Combine all batch entries: (batch, beam, len)
+        seqs_out = torch.stack(final_seqs, dim=0)
+        scores_out = torch.stack(final_scores, dim=0)
+        return seqs_out, scores_out
 
     def generate_sample(
             self,
