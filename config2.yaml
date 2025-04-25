@@ -1,0 +1,98 @@
+Name: "Haowen Zheng – large-within-30M"
+
+###### Tokenization ############################################################
+tokenization:
+  token_type: "5k"
+  token_map:
+      'char': 'hw4lib/data/tokenizer_jsons/tokenizer_char.json'
+      '1k'  : 'hw4lib/data/tokenizer_jsons/tokenizer_1000.json'
+      '5k'  : 'hw4lib/data/tokenizer_jsons/tokenizer_5000.json'
+      '10k' : 'hw4lib/data/tokenizer_jsons/tokenizer_10000.json'
+
+###### Dataset #################################################################
+data:
+  root            : "hw4_data_subset/hw4p2_data"
+  train_partition : "train-clean-100"
+  val_partition   : "dev-clean"
+  test_partition  : "test-clean"
+  subset          : 1.0
+  batch_size      : 16          # 实际显存由 time_reduction 控制
+  NUM_WORKERS     : 2
+  norm            : 'global_mvn'
+  num_feats       : 80
+
+  #### SpecAugment -------------------------------------------------------------
+  specaug         : True
+  specaug_conf:
+    apply_freq_mask       : True
+    freq_mask_width_range : 5
+    num_freq_mask         : 2
+    apply_time_mask       : True
+    time_mask_width_range : 40
+    num_time_mask         : 2
+
+###### Network Specs ###########################################################
+model:
+  # Speech embedding
+  input_dim        : 80
+  time_reduction   : 4        # 2×conv ⨉ 2×BLSTM
+  reduction_method : 'both'   # conv stride 2 + BLSTM stride 2
+
+  # Transformer
+  d_model              : 384
+  num_encoder_layers   : 6
+  num_decoder_layers   : 6
+  num_encoder_heads    : 6     # 384 / 6 = 64
+  num_decoder_heads    : 6
+  d_ff_encoder         : 1536  # 4·d_model
+  d_ff_decoder         : 1536
+  skip_encoder_pe      : False
+  skip_decoder_pe      : False
+
+  dropout              : 0.1
+  layer_drop_rate      : 0.1
+  weight_tying         : True
+
+###### Training ###############################################################
+training:
+  use_wandb                   : True
+  wandb_run_id                : "none"
+  resume                      : True
+  gradient_accumulation_steps : 2    # 有效 batch = 32
+  wandb_project               : "HW4P2-ASR"
+
+###### Loss ###################################################################
+loss:
+  label_smoothing : 0.1
+  ctc_weight      : 0.3
+
+###### Optimizer ###############################################################
+optimizer:
+  name: "adamw"
+  lr  : 0.0007
+  weight_decay: 0.000001
+
+  param_groups: []      # 简化；如需层别 lr 再开启
+
+  layer_decay:
+    enabled: False
+
+  adamw:
+    betas: [0.9, 0.98]  # Transformer 通用设置
+    eps  : 1.0e-8
+    amsgrad: False
+
+###### Scheduler ###############################################################
+scheduler:
+  name: "cosine"
+  cosine:
+    T_max: 40           # 40 epochs 够 100 h 集合收敛
+    eta_min: 0.0
+    last_epoch: -1
+
+  warmup:
+    enabled: True
+    type: "linear"
+    epochs: 5
+    start_factor: 0.1
+    end_factor: 1.0
